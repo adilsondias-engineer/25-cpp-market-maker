@@ -1,0 +1,28 @@
+{
+    "log_level": "info",
+    "min_spread_bps": 5.0,
+    "edge_bps": 2.0,
+    "max_position": 500,
+    "position_skew_bps": 1.0,
+    "quote_size": 100,
+    "max_notional": 1000000.0,
+    "disruptor": {
+        "shm_name": "gateway"
+    },
+    "enable_order_execution": false,
+    "order_ring_path": "order_ring_mm",
+    "fill_ring_path": "fill_ring_oe",
+    "performance": {
+        "enable_rt": false,
+        "cpu_cores": [16, 17]
+    },
+    "xgboost": {
+        "enabled": true,
+        "model_path": "/opt/trading/model/itch_predictor.ubj",
+        "use_gpu": true,
+        "gpu_device_id": 0,
+        "prediction_weight": 0.5,
+        "verbosity": 3,
+        "max_iterations": 100
+    }
+}

@@ -1,0 +1,53 @@
+# Llama 4 Scout Fine-Tuning Requirements
+# Tested with Python 3.11+ and CUDA 12.8 (RTX 5090 Blackwell)
+# Last updated: December 2025
+
+# Core ML Libraries
+torch>=2.9.0
+transformers>=4.53.0
+accelerate>=0.35.0
+datasets>=3.2.0
+
+# PEFT (Parameter-Efficient Fine-Tuning)
+peft>=0.14.0
+
+# Training
+trl>=0.16.0
+
+# Quantization
+bitsandbytes>=0.45.0
+
+# Optimization
+optimum>=1.24.0
+
+# Data Processing
+numpy>=2.2.0
+pandas>=2.2.0
+scipy>=1.15.0
+scikit-learn>=1.6.0
+
+# Database Connectivity
+mysql-connector-python>=9.2.0
+sqlalchemy>=2.0.0
+
+# Progress and Logging
+tqdm>=4.67.0
+tensorboard>=2.19.0
+
+# JSON and Serialization
+orjson>=3.10.0
+
+# Visualization (optional)
+matplotlib>=3.10.0
+seaborn>=0.13.0
+
+# Testing
+pytest>=8.3.0
+pytest-cov>=6.0.0
+
+# Development
+ipython>=8.31.0
+
+# Flash Attention (for RTX 5090 Blackwell)
+# Install separately after other deps:
+# pip install flash-attn --no-build-isolation
