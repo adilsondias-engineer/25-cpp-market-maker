@@ -1,5 +1,15 @@
 # Project 25: Market Maker FSM (XGBoost + Strategy)
 
+## Part of FPGA Trading Systems Portfolio
+
+This project is part of a complete end-to-end trading system:
+- **Main Repository:** [fpga-trading-systems](https://github.com/adilsondias-engineer/fpga-trading-systems)
+- **Project Number:** 25 of 30
+- **Category:** C++ Application
+- **Dependencies:** Project 24 (Order Gateway - Disruptor output), Project 26 (Order Execution)
+
+---
+
 **Platform:** Linux
 **Technology:** C++20, LMAX Disruptor, XGBoost (CUDA 13.0), spdlog, nlohmann/json
 **Status:** Completed
