@@ -20,11 +20,12 @@
     "xgboost": {
         "enabled": true,
         "model_path": "/opt/trading/model/itch_predictor.ubj",
-        "use_gpu": true,
+        "use_gpu": false,
         "gpu_device_id": 0,
         "prediction_weight": 0.5,
         "verbosity": 2,
-        "max_iterations": 100
+        "max_iterations": 100,
+        "async_mode": true
     },
     "_rt_allocation_notes": "CPUs 15-16 for XGBoost inference + quoting (high priority)"
 }

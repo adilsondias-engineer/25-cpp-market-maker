@@ -72,7 +72,7 @@ void OrderProducer::send_order(const trading::OrderRequest& order) {
     order_ring_->publish(order);
     orders_sent_++;
 
-    spdlog::info("Sent order: {} {} {} @{}",
+    spdlog::debug("Sent order: {} {} {} @{}",
                 order.get_order_id(), order.get_symbol(),
                 order.quantity, order.price);
 }

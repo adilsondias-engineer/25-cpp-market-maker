@@ -39,6 +39,14 @@ MarketMakerFSM::MarketMakerFSM(const Config& config)
             logger_->critical("Check CUDA/GPU configuration or set use_gpu=false in config.");
             throw std::runtime_error("XGBoost GPU validation failed - running on CPU instead of GPU");
         }
+
+        // Initialize async prediction worker if enabled
+        if (config_.xgboost.async_mode && predictor_) {
+            logger_->info("Async prediction mode enabled (predict on tick N-1, use for tick N)");
+            async_ = std::make_unique<AsyncPrediction>();
+            async_->running.store(true);
+            async_->worker_thread = std::thread(&MarketMakerFSM::asyncPredictionWorker, this);
+        }
     }
 #else
     if (config_.xgboost.enabled) {
@@ -61,6 +69,12 @@ MarketMakerFSM::MarketMakerFSM(const Config& config)
             logger_->warn("Continuing without order execution");
         }
     }
+}
+
+MarketMakerFSM::~MarketMakerFSM() {
+#ifdef HAVE_XGBOOST
+    shutdownAsyncWorker();
+#endif
 }
 
 void MarketMakerFSM::onBboUpdate(const BBO& bbo) {
@@ -154,7 +168,7 @@ void MarketMakerFSM::handleQuote(const BBO& bbo) {
         else prediction_str = "NEUTRAL";
     }
 #endif
-    logger_->info("[{}] Bid: {:.4f} ({}) | Ask: {:.4f} ({}) | Spread: {:.4f} | Fair: {:.4f} | ML: {}",
+    logger_->debug("[{}] Bid: {:.4f} ({}) | Ask: {:.4f} ({}) | Spread: {:.4f} | Fair: {:.4f} | ML: {}",
                   bbo.symbol, bbo.bid_price, bbo.bid_shares,
                   bbo.ask_price, bbo.ask_shares, bbo.spread, cached_fair_value_, prediction_str);
 
@@ -330,7 +344,13 @@ bool MarketMakerFSM::loadModel(const std::string& model_path) {
 
 double MarketMakerFSM::applyMLPrediction(double base_fair_value, const BBO& bbo) {
     try {
-        // Measure XGBoost inference timing
+        // Use async prediction if enabled (effectively zero latency on hot path)
+        if (async_ && config_.xgboost.async_mode) {
+            double adjustment = getAsyncPrediction(bbo);
+            return base_fair_value + adjustment;
+        }
+
+        // Synchronous mode: Measure XGBoost inference timing
         auto inference_start = std::chrono::high_resolution_clock::now();
 
         // Update predictor with BBO data and get direction prediction
@@ -363,7 +383,7 @@ double MarketMakerFSM::applyMLPrediction(double base_fair_value, const BBO& bbo)
             // Log inference timing periodically (every 100 actual predictions)
             if (inference_count_ % 100 == 0) {
                 double avg_us = inference_total_us_ / inference_count_;
-                logger_->info("[XGBoost Inference] count={}, avg={:.2f}us, min={:.2f}us, max={:.2f}us (GPU: {})",
+                logger_->debug("[XGBoost Inference] count={}, avg={:.2f}us, min={:.2f}us, max={:.2f}us (GPU: {})",
                              inference_count_, avg_us, inference_min_us_, inference_max_us_,
                              predictor_->is_using_gpu() ? "yes" : "NO!");
             }
@@ -513,5 +533,136 @@ void MarketMakerFSM::simulateFill(const BBO& bbo) {
     logger_->debug("POSITION: {} shares, realized_pnl={:.2f}, unrealized_pnl={:.2f}",
                   pos.shares, pos.realized_pnl, pos.unrealized_pnl);
 }
+
+#ifdef HAVE_XGBOOST
+void MarketMakerFSM::asyncPredictionWorker() {
+    logger_->info("[Async] Prediction worker thread started");
+
+    while (async_->running.load()) {
+        BBO bbo_to_process;
+        bool has_work = false;
+
+        {
+            std::unique_lock<std::mutex> lock(async_->mutex);
+
+            // Wait for work or shutdown
+            async_->cv.wait(lock, [this] {
+                return async_->has_pending || !async_->running.load();
+            });
+
+            if (!async_->running.load()) {
+                break;
+            }
+
+            if (async_->has_pending) {
+                bbo_to_process = async_->pending_bbo;
+                async_->has_pending = false;
+                has_work = true;
+            }
+        }
+
+        if (has_work && predictor_) {
+            auto start = std::chrono::high_resolution_clock::now();
+
+            // Run prediction
+            auto [direction, confidence] = predictor_->update(
+                bbo_to_process.bid_price, bbo_to_process.ask_price,
+                static_cast<uint32_t>(bbo_to_process.bid_shares),
+                static_cast<uint32_t>(bbo_to_process.ask_shares),
+                bbo_to_process.timestamp_ns
+            );
+
+            auto end = std::chrono::high_resolution_clock::now();
+            double latency_us = std::chrono::duration<double, std::micro>(end - start).count();
+
+            // Convert direction to prediction value
+            double prediction = 0.0;
+            switch (direction) {
+                case itch::PriceDirection::UP:
+                    prediction = confidence;
+                    break;
+                case itch::PriceDirection::DOWN:
+                    prediction = -confidence;
+                    break;
+                default:
+                    prediction = 0.0;
+                    break;
+            }
+
+            // Store result
+            {
+                std::lock_guard<std::mutex> lock(async_->mutex);
+                async_->ready_prediction = prediction;
+                async_->ready_direction = direction;
+                async_->ready_confidence = confidence;
+                async_->has_ready = true;
+                async_->predictions_completed++;
+                async_->total_latency_us += latency_us;
+            }
+
+            // Log periodically
+            if (async_->predictions_completed % 100 == 0) {
+                double avg_us = async_->total_latency_us / async_->predictions_completed;
+                logger_->debug("[Async] predictions={}, avg_latency={:.2f}us",
+                             async_->predictions_completed, avg_us);
+            }
+        }
+    }
+
+    logger_->info("[Async] Prediction worker thread stopped");
+}
+
+void MarketMakerFSM::submitAsyncPrediction(const BBO& bbo) {
+    if (!async_) return;
+
+    {
+        std::lock_guard<std::mutex> lock(async_->mutex);
+        async_->pending_bbo = bbo;
+        async_->has_pending = true;
+    }
+    async_->cv.notify_one();
+}
+
+double MarketMakerFSM::getAsyncPrediction(const BBO& bbo) {
+    if (!async_) return 0.0;
+
+    double prediction = 0.0;
+    {
+        std::lock_guard<std::mutex> lock(async_->mutex);
+        if (async_->has_ready) {
+            prediction = async_->ready_prediction;
+            last_prediction_ = prediction;  // Store for state display
+        }
+    }
+
+    // Submit current BBO for next prediction (pipeline)
+    submitAsyncPrediction(bbo);
+
+    // Apply prediction as adjustment to fair value
+    double spread = bbo.ask_price - bbo.bid_price;
+    return prediction * spread * config_.xgboost.prediction_weight;
+}
+
+void MarketMakerFSM::shutdownAsyncWorker() {
+    if (!async_) return;
+
+    logger_->info("[Async] Shutting down prediction worker...");
+
+    async_->running.store(false);
+    async_->cv.notify_all();
+
+    if (async_->worker_thread.joinable()) {
+        async_->worker_thread.join();
+    }
+
+    if (async_->predictions_completed > 0) {
+        double avg_us = async_->total_latency_us / async_->predictions_completed;
+        logger_->info("[Async] Final stats: predictions={}, avg_latency={:.2f}us",
+                     async_->predictions_completed, avg_us);
+    }
+
+    async_.reset();
+}
+#endif
 
 } // namespace mm

@@ -22,7 +22,9 @@
  *       -o predictor main.cpp $(pkg-config --libs xgboost)
  */
 
+#include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -416,10 +418,16 @@ namespace itch
             }
             else
             {
-                //XGBoosterSetParam(booster_, "device", "cpu");
+                // CPU inference - explicitly set device to cpu
+                ret = XGBoosterSetParam(booster_, "device", "cpu");
+                if (ret != 0) {
+                    // Fallback: try without explicit device param (older XGBoost)
+                    fprintf(stderr, "[XGBoost] device=cpu param not supported, using default CPU\n");
+                } else {
+                    fprintf(stderr, "[XGBoost] XGBoosterSetParam(device=cpu) returned %d\n", ret);
+                }
                 use_gpu_ = false;
-                last_error_ = "CPU inference not supported";
-                return false;
+                fprintf(stderr, "[XGBoost] CPU mode enabled\n");
             }
 
             loaded_ = true;
@@ -554,6 +562,94 @@ namespace itch
          */
         void set_max_iterations(int max_iter) { max_iterations_ = max_iter; }
         int get_max_iterations() const { return max_iterations_; }
+
+        /**
+         * @brief Benchmark inference latency
+         *
+         * Runs N predictions and reports timing statistics.
+         * Useful for comparing CPU vs GPU performance.
+         *
+         * @param num_iterations Number of predictions to run
+         * @return Struct with timing statistics (avg, min, max, p50, p99 in microseconds)
+         */
+        struct BenchmarkResult {
+            double avg_us = 0.0;
+            double min_us = 0.0;
+            double max_us = 0.0;
+            double p50_us = 0.0;
+            double p99_us = 0.0;
+            int num_iterations = 0;
+            bool success = false;
+        };
+
+        BenchmarkResult benchmark(int num_iterations = 1000)
+        {
+            BenchmarkResult result;
+            result.num_iterations = num_iterations;
+
+            if (!is_loaded()) {
+                last_error_ = "Model not loaded for benchmark";
+                return result;
+            }
+
+            // Create realistic test features
+            std::vector<float> test_data(FeatureVector::NUM_FEATURES);
+            test_data[0] = 173.50f;   // bid_price
+            test_data[1] = 173.52f;   // ask_price
+            test_data[2] = 5000.0f;   // bid_size
+            test_data[3] = 4800.0f;   // ask_size
+            test_data[4] = 0.02f;     // spread
+            test_data[5] = 1.15f;     // spread_bps
+            test_data[6] = 173.51f;   // mid_price
+            test_data[7] = 0.02f;     // order_imbalance
+            test_data[8] = 0.5f;      // price_momentum_1
+            test_data[9] = 1.2f;      // price_momentum_5
+            test_data[10] = 0.015f;   // volume_imbalance_ma
+            test_data[11] = 173.508f; // microprice
+
+            FeatureVector features;
+            std::memcpy(features.data(), test_data.data(), sizeof(float) * FeatureVector::NUM_FEATURES);
+
+            std::vector<double> latencies;
+            latencies.reserve(num_iterations);
+
+            // Warmup (5 iterations)
+            for (int i = 0; i < 5; ++i) {
+                std::vector<float> probs;
+                predict_proba(features, probs);
+            }
+
+            // Benchmark
+            for (int i = 0; i < num_iterations; ++i) {
+                auto start = std::chrono::high_resolution_clock::now();
+                std::vector<float> probs;
+                bool ok = predict_proba(features, probs);
+                auto end = std::chrono::high_resolution_clock::now();
+
+                if (!ok) {
+                    last_error_ = "Prediction failed during benchmark";
+                    return result;
+                }
+
+                double us = std::chrono::duration<double, std::micro>(end - start).count();
+                latencies.push_back(us);
+            }
+
+            // Calculate statistics
+            std::sort(latencies.begin(), latencies.end());
+
+            double sum = 0.0;
+            for (double v : latencies) sum += v;
+
+            result.avg_us = sum / num_iterations;
+            result.min_us = latencies.front();
+            result.max_us = latencies.back();
+            result.p50_us = latencies[num_iterations / 2];
+            result.p99_us = latencies[num_iterations * 99 / 100];
+            result.success = true;
+
+            return result;
+        }
 
     private:
         BoosterHandle booster_ = nullptr;
@@ -776,6 +872,17 @@ namespace itch
             update_count_ = 0;
             last_features_ = {};
             last_probs_ = {0.33f, 0.34f, 0.33f};
+        }
+
+        /**
+         * @brief Run benchmark on the underlying model
+         *
+         * @param num_iterations Number of predictions to run
+         * @return Benchmark results with timing statistics
+         */
+        XGBoostModel::BenchmarkResult benchmark(int num_iterations = 1000)
+        {
+            return model_.benchmark(num_iterations);
         }
 
     private:

@@ -29,7 +29,7 @@ Project 24 (Order Gateway)
     ↓ Raw BBO Data
 Project 25 (Market Maker FSM)  ← YOU ARE HERE
     ├─ Disruptor Consumer (raw BBO)
-    ├─ XGBoost GPU Predictor (84% accuracy, ~10-100μs)
+    ├─ XGBoost GPU Predictor (81% accuracy, ~10-100μs)
     ├─ Fair Value Calculation
     ├─ Quote Generation (with prediction-based edge)
     ├─ Risk Management
@@ -43,7 +43,7 @@ Project 25 (receives fills)
 ```
 
 **Key Features:**
-- **XGBoost GPU Inference:** Local GPU prediction (84% accuracy, ~10-100 μs)
+- **XGBoost GPU Inference:** Local GPU prediction (81% accuracy, ~10-100 μs)
 - **Disruptor-Only IPC:** No TCP/network dependencies, pure shared memory
 - **Prediction-Aware Trading:** Uses XGBoost confidence to adjust edge
 - **Position Skew:** Inventory management to reduce risk
@@ -78,7 +78,7 @@ Project 25 (receives fills)
 │                         │  XGBoost GPU     │                     │
 │                         │  Predictor       │                     │
 │                         │  (CUDA 13.0)     │                     │
-│                         │  84% accuracy    │                     │
+│                         │  81% accuracy    │                     │
 │                         │  ~10-100 μs      │                     │
 │                         └──────────┬───────┘                     │
 │                                    │                             │
@@ -133,19 +133,18 @@ Project 25 (receives fills)
 The market maker operates as a finite state machine:
 
 1. **IDLE** - Waiting for BBO updates from Disruptor
-2. **PREDICT** - Running XGBoost GPU inference on BBO data
-3. **CALCULATE** - Computing fair value from BBO + prediction
-4. **QUOTE** - Generating bid/ask quotes with position skew
-5. **RISK_CHECK** - Validating position and notional limits
-6. **ORDER_GEN** - Sending orders via Disruptor to P26
-7. **WAIT_FILL** - Waiting for fills from P26
+2. **CALCULATE** - Computing fair value, running XGBoost inference
+3. **QUOTE** - Generating bid/ask quotes with position skew
+4. **RISK_CHECK** - Validating position and notional limits
+5. **ORDER_GEN** - Sending orders via Disruptor to P26
+6. **WAIT_FILL** - Waiting for fills from P26
 
 **State Transitions:**
 ```
-IDLE → PREDICT → CALCULATE → QUOTE → RISK_CHECK → ORDER_GEN → WAIT_FILL → PREDICT
-                    ↑                      ↓
-                    └──────────────────────┘
-                         (Risk Failed)
+IDLE → CALCULATE → QUOTE → RISK_CHECK → ORDER_GEN → WAIT_FILL → IDLE
+           ↑                   ↓
+           └───────────────────┘
+                (Risk Failed)
 ```
 
 ---
@@ -362,21 +361,21 @@ sudo setcap cap_sys_nice=eip ./market_maker
 ├── CMakeLists.txt            # Build configuration
 ├── src/
 │   ├── main.cpp              # Entry point, config loading
-│   ├── market_maker_fsm.cpp  # FSM implementation
-│   ├── xgboost_predictor.cpp # XGBoost GPU inference
-│   ├── feature_extractor.cpp # BBO to feature vector
+│   ├── market_maker_fsm.cpp  # FSM implementation (includes XGBoost inference)
+│   ├── bbo_parser.cpp        # BBO data parsing and JSON conversion
 │   ├── position_tracker.cpp  # Position and PnL tracking
 │   └── order_producer.cpp    # Disruptor producer to P26
 ├── include/
-│   ├── market_maker_fsm.h    # FSM class definition
-│   ├── xgboost_predictor.h   # XGBoost predictor interface
-│   ├── feature_extractor.h   # Feature extractor interface
+│   ├── market_maker_fsm.h    # FSM class with XGBoostConfig
+│   ├── bbo_parser.h          # BBO parser interface
 │   ├── position_tracker.h    # Position tracker
 │   ├── order_types.h         # BBO, Quote, Order, Fill structs
 │   ├── order_producer.h      # Order producer interface
-│   └── disruptor_client.h    # Disruptor consumer interface
+│   ├── disruptor_client.h    # Disruptor consumer interface
+│   └── trading_math_asm.h    # FMA assembly optimization helpers
 ├── model/
 │   ├── itch_predictor.ubj    # XGBoost model (36 MB)
+│   ├── itch_predictor.hpp    # XGBoost C API wrapper (81% accuracy)
 │   └── xgboost/              # XGBoost source (for building)
 └── vcpkg.json                # Dependency manifest
 ```
@@ -428,13 +427,13 @@ sudo setcap cap_sys_nice=eip ./market_maker
 FPGA (Project 23)
     ↓ PCIe Gen2 x4 (/dev/xdma0_c2h_0)
 Project 24: Order Gateway
-    ├─ PCIeListener (48-byte BBO packets)
+    ├─ PCIeListener (56-byte BBO packets with magic header)
     ├─ BBOValidator (filter invalid data)
     └─ Disruptor Producer (raw BBO)
     ↓ Shared Memory (/dev/shm/bbo_ring_gateway)
 Project 25: Market Maker  ← YOU ARE HERE
     ├─ Disruptor Consumer (raw BBO)
-    ├─ XGBoostPredictor (84% accuracy, ~10-100μs)
+    ├─ XGBoostPredictor (81% accuracy, ~10-100μs)
     ├─ MarketMakerFSM (strategy logic)
     ├─ PositionTracker (PnL management)
     └─ OrderProducer (orders to P26)

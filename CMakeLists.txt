@@ -58,23 +58,31 @@ enable_language(ASM)
 # Executable (includes assembly sources)
 add_executable(market_maker ${SOURCES} ${ASM_SOURCES})
 
-# spdlog - use FetchContent to avoid system fmt version conflicts
-# This downloads spdlog with its bundled fmt, avoiding the fmt10 vs fmt11 issue
-include(FetchContent)
-
-# Use spdlog in header-only mode with bundled fmt
-FetchContent_Declare(
-    spdlog
-    GIT_REPOSITORY https://github.com/gabime/spdlog.git
-    GIT_TAG v1.14.1
-    GIT_SHALLOW TRUE
-)
-set(SPDLOG_FMT_EXTERNAL OFF CACHE BOOL "" FORCE)  # Use bundled fmt
-set(SPDLOG_BUILD_SHARED OFF CACHE BOOL "" FORCE)  # Static/header-only
-FetchContent_MakeAvailable(spdlog)
-
-# Link spdlog (header-only with bundled fmt)
-target_link_libraries(market_maker PRIVATE spdlog::spdlog_header_only)
+# spdlog - use system library when cross-compiling, FetchContent otherwise
+if(CMAKE_CROSSCOMPILING)
+    message(STATUS "Cross-compiling: using system spdlog with external fmt")
+    find_package(spdlog REQUIRED)
+    find_package(fmt REQUIRED)
+    # Tell spdlog to use external fmt (Buildroot configuration)
+    add_compile_definitions(SPDLOG_FMT_EXTERNAL)
+    # Link spdlog with external fmt
+    target_link_libraries(market_maker PRIVATE spdlog::spdlog fmt::fmt)
+else()
+    # Native build: use FetchContent with bundled fmt to avoid system fmt version conflicts
+    message(STATUS "Native build: using FetchContent spdlog with bundled fmt")
+    include(FetchContent)
+    FetchContent_Declare(
+        spdlog
+        GIT_REPOSITORY https://github.com/gabime/spdlog.git
+        GIT_TAG v1.14.1
+        GIT_SHALLOW TRUE
+    )
+    set(SPDLOG_FMT_EXTERNAL OFF CACHE BOOL "" FORCE)  # Use bundled fmt
+    set(SPDLOG_BUILD_SHARED OFF CACHE BOOL "" FORCE)  # Static/header-only
+    FetchContent_MakeAvailable(spdlog)
+    # Link spdlog (header-only with bundled fmt)
+    target_link_libraries(market_maker PRIVATE spdlog::spdlog_header_only)
+endif()
 
 # nlohmann_json - try find_package first, fallback to FetchContent
 find_package(nlohmann_json CONFIG QUIET)

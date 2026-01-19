@@ -1,6 +1,11 @@
 #pragma once
 #include <string>
 #include <memory>
+#include <atomic>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <queue>
 #include "order_types.h"
 #include "position_tracker.h"
 #include "order_producer.h"
@@ -22,6 +27,7 @@ struct XGBoostConfig {
     double prediction_weight = 0.5;  // Weight of ML prediction vs mid-price
     int verbosity = 2;  // 0=silent, 1=warning, 2=info, 3=debug (default=info for GPU debugging)
     int max_iterations = 0;  // Max trees for inference (0=all, N=first N trees) - latency/accuracy tradeoff
+    bool async_mode = false;  // Enable async prediction (predict on tick N-1, use for tick N)
 };
 
 enum class State {
@@ -51,6 +57,7 @@ public:
     };
 
     explicit MarketMakerFSM(const Config& config);
+    ~MarketMakerFSM();
 
     // Main event handler
     void onBboUpdate(const BBO& bbo);
@@ -107,6 +114,42 @@ private:
     double inference_total_us_ = 0.0;   // Sum of all inference times
     double inference_min_us_ = 0.0;     // Minimum inference time
     double inference_max_us_ = 0.0;     // Maximum inference time
+
+    // Async prediction pipeline (predict on tick N-1, use for tick N)
+    // This hides inference latency from the hot path
+    struct AsyncPrediction {
+        std::atomic<bool> running{false};
+        std::thread worker_thread;
+        std::mutex mutex;
+        std::condition_variable cv;
+
+        // Input: BBO to predict on
+        BBO pending_bbo;
+        bool has_pending{false};
+
+        // Output: Ready prediction result
+        double ready_prediction{0.0};
+        itch::PriceDirection ready_direction{itch::PriceDirection::NEUTRAL};
+        float ready_confidence{0.0f};
+        bool has_ready{false};
+
+        // Stats
+        uint64_t predictions_completed{0};
+        double total_latency_us{0.0};
+    };
+    std::unique_ptr<AsyncPrediction> async_;
+
+    // Async worker thread function
+    void asyncPredictionWorker();
+
+    // Submit BBO for async prediction
+    void submitAsyncPrediction(const BBO& bbo);
+
+    // Get the last ready prediction (non-blocking)
+    double getAsyncPrediction(const BBO& bbo);
+
+    // Shutdown async worker
+    void shutdownAsyncWorker();
 #endif
 };
 

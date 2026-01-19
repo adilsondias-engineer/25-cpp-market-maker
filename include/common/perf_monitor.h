@@ -32,6 +32,7 @@ public:
 
     void recordLatency(uint64_t latency_ns) {
         latencies_.push_back(latency_ns);
+        latencies_raw_.push_back(latency_ns);  // Keep chronological copy
     }
 
     Metrics getMetrics() {
@@ -72,12 +73,13 @@ public:
     }
 
     void saveToFile(const std::string& filename) {
+        // Save in chronological order (before any sorting from getMetrics)
         std::ofstream file(filename);
         file << "latency_ns\n";
-        for (auto latency : latencies_) {
+        for (auto latency : latencies_raw_) {
             file << latency << "\n";
         }
-        std::cout << "[PERF] Saved " << latencies_.size() << " samples to " << filename << "\n";
+        std::cout << "[PERF] Saved " << latencies_raw_.size() << " samples to " << filename << "\n";
     }
 
     // Save stats as JSON for Trading UI (P29) consumption
@@ -114,6 +116,7 @@ public:
 
     void reset() {
         latencies_.clear();
+        latencies_raw_.clear();
     }
 
     size_t count() const {
@@ -121,7 +124,8 @@ public:
     }
 
 private:
-    std::vector<uint64_t> latencies_;
+    std::vector<uint64_t> latencies_;      // May be sorted by getMetrics()
+    std::vector<uint64_t> latencies_raw_;  // Always chronological order
 };
 
 // RAII latency measurement
